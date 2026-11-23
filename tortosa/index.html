@@ -131,6 +131,7 @@ details.cl td:last-child{text-align:right}
 
   <div id="msg"></div>
   <div class="grid" id="chairs"></div>
+  <div id="addRow" style="margin-top:16px" hidden><button class="btn" id="btnAddChair" type="button"></button></div>
   <section class="hist" id="hist" hidden><h3>CIERRES ANTERIORES</h3><div id="histList"></div></section>
 </div>
 <div id="modalRoot"></div>
@@ -138,7 +139,7 @@ details.cl td:last-child{text-align:right}
 
 <script>
 (function(){
-var MAX_CHAIRS=15;
+var MAX_CHAIRS=8;
 var PLACE="Tortosa";var STORE_KEY="jr-caja-tortosa";
 document.getElementById('place').textContent=PLACE+' · Caja por silla';
 var DEFAULT_SERVICES=[
@@ -269,7 +270,7 @@ function render(){
     ]));
   })(c)}
   $('grand').textContent=money(grand);
-  $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;
+  $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;$('addRow').hidden=!isAdmin;var ab=$('btnAddChair');ab.textContent='+ Añadir silla ('+cfg.chairs.length+'/'+MAX_CHAIRS+')';ab.disabled=cfg.chairs.length>=MAX_CHAIRS;
   var hs=$('hist');hs.hidden=!closures.length;
   var hl=$('histList');hl.textContent='';
   closures.forEach(function(cl){
@@ -538,6 +539,7 @@ $('btnClose').addEventListener('click',closeDialog);
 $('btnUnlock').addEventListener('click',unlockDialog);
 $('btnBackup').addEventListener('click',backupDialog);
 $('btnLock').addEventListener('click',function(){isAdmin=false;render()});
+$('btnAddChair').addEventListener('click',function(){if(cfg.chairs.length>=MAX_CHAIRS)return;saveCfg({startedAt:cfg.startedAt,services:cfg.services,chairs:cfg.chairs.concat([''])}).catch(function(e){showMsg('No se pudo guardar: '+(e&&e.message||'error'),true)})});
 start();
 })();
 </script>
