@@ -81,6 +81,11 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px 0;bo
 .chair.locked{display:block;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit}
 .chair.locked:hover{border-color:var(--accent)}
 .enter{margin-top:14px;color:var(--muted);font-size:13px}
+.feed{list-style:none;margin:0;padding:0}
+.feed li{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;font-size:14px}
+.feed .t{color:var(--muted);width:44px;flex:none}
+.feed .c{width:58px;flex:none;color:var(--muted)}
+.feed .s{flex:1;min-width:0;overflow-wrap:anywhere}
 #periodPanel{margin-top:16px}
 #periodPanel>details.cl>summary{font-size:16px}
 section.hist{margin-top:32px}
@@ -278,7 +283,7 @@ function render(){
       isAdmin?null:h('button',{class:'btn ghost',type:'button',text:'Cerrar silla',style:'margin-top:12px',onclick:function(){delete unlocked[c];render()}})
     ]));
   })(c)}
-  $('grand').textContent=money(grand);renderPeriod(grand);
+  $('grand').textContent=money(grand);renderPeriod(grand);schedulePush();
   $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;$('addRow').hidden=!isAdmin;var ab=$('btnAddChair');ab.textContent='+ Añadir silla ('+cfg.chairs.length+'/'+MAX_CHAIRS+')';ab.disabled=cfg.chairs.length>=MAX_CHAIRS;document.querySelector('.period .tot').hidden=!isAdmin;
   var hs=$('hist');hs.hidden=!closures.length;
   var hl=$('histList');hl.textContent='';
@@ -392,7 +397,119 @@ function snapshotUrl(){
   bytes.forEach(function(x){bin+=String.fromCharCode(x)});
   return location.origin+location.pathname+'#r='+btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
+/* ---------- nube (solo para que el jefe mire desde el móvil) ---------- */
+var SB_URL="https://qbepaxnluvwcdcgvpxgr.supabase.co",SB_KEY="sb_publishable_b3zli1mnXTv_EXdy12Sv2Q_2E0rLlQl";
+var cloud=null,lastPushJson='',lastPushAt=0,pushTimer=null;
+function r2(n){return Math.round(n*100)/100}
+function sbRpc(fn,body){return fetch(SB_URL+'/rest/v1/rpc/'+fn,{method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},body:JSON.stringify(body)})}
+function rand(){var a=new Uint8Array(32);crypto.getRandomValues(a);var s='';a.forEach(function(x){s+=String.fromCharCode(x)});return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+function loadCloud(){return db.doc('secret/cloud').get().then(function(s){cloud=s.exists?s.data():null})}
+function ensureCloud(){
+  if(cloud)return Promise.resolve(cloud);
+  var c={read:rand(),write:rand()};
+  return db.doc('secret/cloud').set(c).then(function(){cloud=c;return c});
+}
+function summaryObj(){
+  var chairs=[],total=0,feed=[];
+  for(var c=0;c<cfg.chairs.length;c++){(function(c){
+    var sales=periodSales(c),by={},t=0;
+    sales.forEach(function(s){by[s.name]=by[s.name]||[0,0];by[s.name][0]++;by[s.name][1]+=s.price;t+=s.price;feed.push([s.ts,c,s.name,s.price])});
+    total+=t;
+    chairs.push({n:cfg.chairs[c]||'',k:sales.length,v:r2(t),i:Object.keys(by).map(function(k){return [k,by[k][0],r2(by[k][1])]})});
+  })(c)}
+  feed.sort(function(a,b){return b[0]-a[0]});
+  var hist=closures.slice(0,8).map(function(cl){return {l:cl.label||'Cierre',s:cl.startedAt||0,e:cl.endedAt,v:cl.total,t:cl.totals||[],c:cl.chairs||[]}});
+  return {p:PLACE,s:cfg.startedAt,v:r2(total),c:chairs,r:feed.slice(0,25),h:hist};
+}
+function pushNow(force){
+  if(!cloud)return Promise.resolve(false);
+  var o=summaryObj(),j=JSON.stringify(o);
+  if(!force&&j===lastPushJson&&Date.now()-lastPushAt<600000)return Promise.resolve(true);
+  o.t=Date.now();
+  return sbRpc('push_summary',{p_read:cloud.read,p_write:cloud.write,p_data:o})
+    .then(function(r){if(!r.ok)throw new Error('http');lastPushJson=j;lastPushAt=Date.now();return true})
+    .catch(function(){return false});
+}
+function schedulePush(){if(!cloud)return;clearTimeout(pushTimer);pushTimer=setTimeout(function(){pushNow(false)},3000)}
+
+function ago(ms){var s=Math.max(0,Math.round(ms/1000));if(s<60)return 'hace '+s+' s';var m=Math.round(s/60);if(m<60)return 'hace '+m+' min';var hh=Math.round(m/60);if(hh<48)return 'hace '+hh+' h';return 'hace '+Math.round(hh/24)+' días'}
+function showLive(token){
+  var w=document.querySelector('.wrap'),logo=document.querySelector('.logo').cloneNode(true);
+  w.textContent='';
+  document.title='Barbería JR '+PLACE+' en directo';
+  var lbl=h('div',{class:'lbl',text:'Periodo actual'}),big=h('div',{class:'big',text:'—'});
+  var note=h('div',{class:'note',role:'status',text:'Cargando…'});
+  var chairsBox=h('section',{class:'hist'}),feedBox=h('section',{class:'hist'}),histBox=h('section',{class:'hist'});
+  w.appendChild(h('header',null,[h('div',{class:'brand'},[logo,h('div',null,[h('h1',{text:'BARBERÍA JR'}),h('p',{text:PLACE+' · En directo'})])]),h('div',{class:'period'},[h('div',{class:'tot'},[lbl,big])])]));
+  w.appendChild(note);w.appendChild(chairsBox);w.appendChild(feedBox);w.appendChild(histBox);
+  var updatedAt=0,failed=false,openC={};
+  function tick(){
+    if(!updatedAt)return;
+    var age=Date.now()-updatedAt,stale=age>900000;
+    note.className='note'+(stale?' err':'');
+    note.textContent='Actualizado '+ago(age)+'.'+(stale?' La tablet no envía datos desde hace rato: puede estar apagada o sin internet.':'')+(failed?' Sin conexión, reintentando…':'');
+  }
+  function paint(row){
+    var o=row.data||{};updatedAt=new Date(row.updated_at).getTime();
+    big.textContent=money(o.v);lbl.textContent=o.s?'Desde el '+longDate(o.s):'Periodo actual';
+    chairsBox.textContent='';
+    (o.c||[]).forEach(function(c,idx){
+      var rows=(c.i||[]).map(function(x){return h('tr',null,[h('td',{text:x[0]+' × '+x[1]}),h('td',{text:money(x[2])})])});
+      if(!rows.length)rows=[h('tr',null,[h('td',{text:'Sin servicios en este periodo'}),h('td',{text:money(0)})])];
+      var d=h('details',{class:'cl'},[h('summary',null,[h('span',{text:'Silla '+(idx+1)+(c.n?' · '+c.n:'')}),h('span',{class:'lbl',text:c.k+(c.k===1?' servicio':' servicios')}),h('span',{class:'r',text:money(c.v)})]),h('table',null,[h('tbody',null,rows)])]);
+      if(openC[idx])d.open=true;
+      d.addEventListener('toggle',function(){openC[idx]=d.open});
+      chairsBox.appendChild(d);
+    });
+    feedBox.textContent='';
+    if((o.r||[]).length){
+      feedBox.appendChild(h('h3',{text:'ÚLTIMOS COBROS'}));
+      feedBox.appendChild(h('ul',{class:'feed'},o.r.map(function(x){return h('li',null,[h('span',{class:'t',text:hhmm(x[0])}),h('span',{class:'c',text:'Silla '+(x[1]+1)}),h('span',{class:'s',text:x[2]}),h('b',{text:money(x[3])})])})));
+    }
+    histBox.textContent='';
+    if((o.h||[]).length){
+      histBox.appendChild(h('h3',{text:'CIERRES ANTERIORES'}));
+      o.h.forEach(function(cl){
+        var rows=(cl.t||[]).map(function(v,i){return h('tr',null,[h('td',{text:'Silla '+(i+1)+((cl.c&&cl.c[i])?' · '+cl.c[i]:'')}),h('td',{text:money(v)})])});
+        histBox.appendChild(h('details',{class:'cl'},[h('summary',null,[h('span',{text:cl.l}),h('span',{class:'lbl',text:(cl.s?longDate(cl.s):'Desde el inicio')+' → '+longDate(cl.e)}),h('span',{class:'r',text:money(cl.v)})]),h('table',null,[h('tbody',null,rows)])]));
+      });
+    }
+    tick();
+  }
+  function load(){
+    fetch(SB_URL+'/rest/v1/rpc/get_summary',{method:'POST',headers:{apikey:SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_read:token})})
+      .then(function(r){if(!r.ok)throw new Error('http');return r.json()})
+      .then(function(rows){failed=false;if(!Array.isArray(rows)||!rows.length){note.textContent='Todavía no hay datos. Abre la app en la tablet para que empiece a enviarlos.';return}paint(rows[0])})
+      .catch(function(){failed=true;if(updatedAt)tick();else note.textContent='Sin conexión. Reintentando…'});
+  }
+  load();
+  setInterval(function(){if(!document.hidden)load()},8000);
+  setInterval(tick,1000);
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)load()});
+}
 function shareDialog(){
+  var msg=h('p',{class:'empty',role:'status',text:'Preparando el enlace…'});
+  var box=h('input',{class:'in',id:'shUrl',type:'text',readonly:'','aria-label':'Enlace en directo',value:''});
+  var url='';
+  var acts=[h('button',{class:'btn ghost',type:'button',text:'Cerrar',onclick:closeModal})];
+  acts.unshift(h('button',{class:'btn ghost',type:'button',text:'Enlace de foto (sin nube)',onclick:shareDialogPhoto}));
+  acts.unshift(h('button',{class:'btn',type:'button',text:'Copiar enlace',onclick:function(){
+    if(!url)return;
+    function fb(){box.focus();box.select();msg.textContent='Selecciona el enlace y cópialo.'}
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(url).then(function(){msg.textContent='Enlace copiado.'},fb);else fb();
+  }}));
+  if(navigator.share)acts.unshift(h('button',{class:'btn primary',type:'button',text:'Compartir…',onclick:function(){if(url)navigator.share({title:'Barbería JR '+PLACE+' en directo',url:url}).catch(function(){})}}));
+  openModal(h('div',{class:'modal',role:'dialog','aria-label':'Ver desde el móvil'},[
+    h('h3',{text:'VER DESDE EL MÓVIL'}),
+    h('p',{text:'Envía este enlace al móvil del jefe (por WhatsApp, por ejemplo). Al abrirlo ve en directo lo que lleva cada silla. Solo se puede mirar, no cambiar nada. Quien tenga el enlace puede ver los números, así que solo se le da al jefe.'}),
+    box,msg,h('div',{class:'acts'},acts)
+  ]));
+  ensureCloud().then(function(c){
+    url=location.origin+location.pathname+'#v='+c.read;box.value=url;
+    return pushNow(true).then(function(ok){msg.textContent=ok?'Listo. El enlace se actualiza solo con lo que pase en la tablet.':'Ahora mismo no hay conexión con la nube. El enlace funcionará en cuanto la tablet tenga internet.'});
+  }).catch(function(){msg.textContent='No se pudo preparar el enlace.'});
+}
+function shareDialogPhoto(){
   var url=snapshotUrl();
   var box=h('input',{class:'in',id:'shUrl',type:'text',readonly:'','aria-label':'Enlace de resumen',value:url});
   var msg=h('p',{class:'empty',role:'status'});
@@ -576,6 +693,9 @@ function subscribeDays(){
 function start(){
   db=localDb(STORE_KEY);
   render();
+  loadCloud().then(function(){schedulePush()});
+  setInterval(function(){pushNow(false)},300000);
+  window.addEventListener('online',schedulePush);
   var first=true;
   db.doc('config/main').onSnapshot(function(snap){
     var prevStart=cfg.startedAt;
@@ -635,7 +755,7 @@ function backupDialog(){
     r.onload=function(){
       try{var o=JSON.parse(r.result);if(!o||typeof o!=='object'||Array.isArray(o))throw new Error('x');}
       catch(e){msg.textContent='Ese archivo no es una copia válida.';return}
-      db.importAll(r.result).then(function(){msg.textContent='Copia restaurada.'},function(e){msg.textContent='No se pudo restaurar: '+e.message});
+      db.importAll(r.result).then(function(){msg.textContent='Copia restaurada.';loadCloud()},function(e){msg.textContent='No se pudo restaurar: '+e.message});
     };
     r.readAsText(f);
   });
@@ -666,7 +786,7 @@ $('btnBackup').addEventListener('click',backupDialog);
 $('btnLock').addEventListener('click',function(){isAdmin=false;unlocked={};render()});
 $('btnShare').addEventListener('click',shareDialog);
 $('btnAddChair').addEventListener('click',function(){if(cfg.chairs.length>=MAX_CHAIRS)return;saveCfg({startedAt:cfg.startedAt,services:cfg.services,chairs:cfg.chairs.concat([''])}).catch(function(e){showMsg('No se pudo guardar: '+(e&&e.message||'error'),true)})});
-if(/^#r=/.test(location.hash)){showSnapshot()}else{start()}
+if(/^#r=/.test(location.hash)){showSnapshot()}else if(/^#v=/.test(location.hash)){showLive(location.hash.slice(3))}else{start()}
 })();
 </script>
 </body></html>
