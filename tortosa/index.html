@@ -78,6 +78,11 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px 0;bo
 .last li .x{border:0;background:none;color:var(--muted);padding:2px 8px;border-radius:6px;font-size:16px;line-height:1}
 .last li .x:hover{color:var(--danger)}
 .empty{color:var(--muted);font-size:13px;margin:6px 0 0}
+.chair.locked{display:block;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit}
+.chair.locked:hover{border-color:var(--accent)}
+.enter{margin-top:14px;color:var(--muted);font-size:13px}
+#periodPanel{margin-top:16px}
+#periodPanel>details.cl>summary{font-size:16px}
 section.hist{margin-top:32px}
 section.hist h3{font:400 24px/1 var(--display);letter-spacing:.08em;margin:0 0 10px}
 details.cl{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-top:8px}
@@ -122,6 +127,7 @@ details.cl td:last-child{text-align:right}
       <div class="admin" id="adminBtns" hidden>
         <button class="btn" id="btnPrices" type="button">Precios</button>
         <button class="btn primary" id="btnClose" type="button">Cerrar periodo</button>
+        <button class="btn" id="btnShare" type="button">Enviar al móvil</button>
         <button class="btn" id="btnBackup" type="button">Copia</button>
         <button class="btn ghost" id="btnLock" type="button">Bloquear</button>
       </div>
@@ -130,6 +136,7 @@ details.cl td:last-child{text-align:right}
   </header>
 
   <div id="msg"></div>
+  <section id="periodPanel" hidden><details class="cl" id="periodDet"><summary><span>Lo que ha hecho cada silla</span><span class="r" id="periodTotal"></span></summary><div id="periodBody"></div></details></section>
   <div class="grid" id="chairs"></div>
   <div id="addRow" style="margin-top:16px" hidden><button class="btn" id="btnAddChair" type="button"></button></div>
   <section class="hist" id="hist" hidden><h3>CIERRES ANTERIORES</h3><div id="histList"></div></section>
@@ -173,7 +180,7 @@ function h(tag,attrs,kids){
 }
 function $(id){return document.getElementById(id)}
 
-var db=null,isAdmin=false;
+var db=null,isAdmin=false,unlocked={},lastAct=Date.now(),openChairs={};
 var cfg={startedAt:0,services:DEFAULT_SERVICES,chairs:['','','','']};
 var days={};      // docId -> {chair,day,sales[]}
 var closures=[];
@@ -246,6 +253,7 @@ function render(){
   for(var c=0;c<cfg.chairs.length;c++){(function(c){
     var sales=periodSales(c),total=sales.reduce(function(a,s){return a+s.price},0);
     grand+=total;
+    if(!(isAdmin||unlocked[c])){root.appendChild(lockedCard(c));return}
     var tiles=cfg.services.map(function(s){
       return h('button',{class:'tile',type:'button',onclick:function(){
         if(s.price==null)freeDialog(c,s.name);else addSale(c,s.name,s.price);
@@ -266,11 +274,12 @@ function render(){
         h('div',{class:'nm'},[h('h2',{text:'SILLA '+(c+1)}),h('div',{class:'who',text:cfg.chairs[c]||'Sin nombre'})]),
         h('div',{class:'sum'},[h('div',{class:'big',text:money(total)}),h('div',{class:'cnt',text:sales.length+(sales.length===1?' servicio':' servicios')})])]),
       h('div',{class:'svc'},tiles),
-      h('div',{class:'last'},[h('div',{class:'lbl',text:'Últimos cobros'}),list])
+      h('div',{class:'last'},[h('div',{class:'lbl',text:'Últimos cobros'}),list]),
+      isAdmin?null:h('button',{class:'btn ghost',type:'button',text:'Cerrar silla',style:'margin-top:12px',onclick:function(){delete unlocked[c];render()}})
     ]));
   })(c)}
-  $('grand').textContent=money(grand);
-  $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;$('addRow').hidden=!isAdmin;var ab=$('btnAddChair');ab.textContent='+ Añadir silla ('+cfg.chairs.length+'/'+MAX_CHAIRS+')';ab.disabled=cfg.chairs.length>=MAX_CHAIRS;
+  $('grand').textContent=money(grand);renderPeriod(grand);
+  $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;$('addRow').hidden=!isAdmin;var ab=$('btnAddChair');ab.textContent='+ Añadir silla ('+cfg.chairs.length+'/'+MAX_CHAIRS+')';ab.disabled=cfg.chairs.length>=MAX_CHAIRS;document.querySelector('.period .tot').hidden=!isAdmin;
   var hs=$('hist');hs.hidden=!closures.length;
   var hl=$('histList');hl.textContent='';
   closures.forEach(function(cl){
@@ -323,6 +332,108 @@ function deleteClosure(cl){
     h('div',{class:'acts'},[h('button',{class:'btn ghost',type:'button',text:'Cancelar',onclick:closeModal}),go])]));
 }
 
+function lockedCard(c){
+  var icon=h('div');icon.innerHTML=CHAIR_SVG;
+  return h('button',{class:'chair locked',type:'button',onclick:function(){chairPinDialog(c)}},[
+    h('div',{class:'chead'},[icon.firstChild,h('div',{class:'nm'},[h('h2',{text:'SILLA '+(c+1)}),h('div',{class:'who',text:cfg.chairs[c]||'Sin nombre'})])]),
+    h('div',{class:'enter',text:'Toca para entrar con tu PIN'})
+  ]);
+}
+function renderPeriod(grand){
+  var pnl=$('periodPanel');pnl.hidden=!isAdmin;if(!isAdmin)return;
+  $('periodTotal').textContent=money(grand);
+  var body=$('periodBody');body.textContent='';
+  for(var c=0;c<cfg.chairs.length;c++){(function(c){
+    var sales=periodSales(c),total=sales.reduce(function(a,s){return a+s.price},0),by={};
+    sales.forEach(function(s){by[s.name]=by[s.name]||{n:0,t:0};by[s.name].n++;by[s.name].t+=s.price});
+    var rows=Object.keys(by).sort(function(a,b){return by[b].t-by[a].t}).map(function(k){return h('tr',null,[h('td',{text:k+' × '+by[k].n}),h('td',{text:money(by[k].t)})])});
+    if(!rows.length)rows=[h('tr',null,[h('td',{text:'Sin servicios en este periodo'}),h('td',{text:money(0)})])];
+    var d=h('details',{class:'cl'},[
+      h('summary',null,[h('span',{text:'Silla '+(c+1)+(cfg.chairs[c]?' · '+cfg.chairs[c]:'')}),h('span',{class:'lbl',text:sales.length+(sales.length===1?' servicio':' servicios')}),h('span',{class:'r',text:money(total)})]),
+      h('table',null,[h('tbody',null,rows)])]);
+    if(openChairs[c])d.open=true;
+    d.addEventListener('toggle',function(){openChairs[c]=d.open});
+    body.appendChild(d);
+  })(c)}
+}
+function chairPinDialog(c){
+  Promise.all([db.doc('secret/chairpins').get(),db.doc('secret/pin').get()]).then(function(r){
+    var pins=(r[0].exists&&r[0].data().pins)||[],chairHash=pins[c]||'',adminHash=r[1].exists?r[1].data().hash:'';
+    var p=h('input',{class:'in',id:'cpin',type:'password',inputmode:'numeric',autocomplete:'off',placeholder:'PIN'});
+    var err=h('p',{class:'empty',role:'alert'});
+    function ok(){
+      var v=p.value.trim();if(!v)return;
+      sha(v).then(function(x){
+        if(adminHash&&x===adminHash){isAdmin=true;lastAct=Date.now();closeModal();render()}
+        else if(chairHash&&x===chairHash){unlocked[c]=true;lastAct=Date.now();closeModal();render()}
+        else{err.textContent='PIN incorrecto.';p.value='';p.focus()}
+      });
+    }
+    p.addEventListener('keydown',function(e){if(e.key==='Enter')ok()});
+    var hint=chairHash?'Escribe el PIN de esta silla.':(adminHash?'Esta silla aún no tiene PIN. El jefe se lo pone desde Precios.':'Todavía no hay PIN. El jefe tiene que crear el suyo con el botón Modo jefe.');
+    openModal(h('div',{class:'modal',role:'dialog','aria-label':'Entrar en la silla'},[
+      h('h3',{text:'SILLA '+(c+1)+(cfg.chairs[c]?' · '+cfg.chairs[c]:'')}),
+      h('p',{text:hint}),p,err,
+      h('div',{class:'acts'},[h('button',{class:'btn ghost',type:'button',text:'Cancelar',onclick:closeModal}),h('button',{class:'btn primary',type:'button',text:'Entrar',onclick:ok})])
+    ]));
+    p.focus();
+  });
+}
+function snapshotUrl(){
+  var chairs=[],total=0;
+  for(var c=0;c<cfg.chairs.length;c++){
+    var sales=periodSales(c),by={},t=0;
+    sales.forEach(function(s){by[s.name]=by[s.name]||[0,0];by[s.name][0]++;by[s.name][1]+=s.price;t+=s.price});
+    total+=t;
+    chairs.push({n:cfg.chairs[c]||'',k:sales.length,v:Math.round(t*100)/100,i:Object.keys(by).map(function(k){return [k,by[k][0],Math.round(by[k][1]*100)/100]})});
+  }
+  var o={p:PLACE,s:cfg.startedAt,t:Date.now(),v:Math.round(total*100)/100,c:chairs};
+  var bytes=new TextEncoder().encode(JSON.stringify(o)),bin='';
+  bytes.forEach(function(x){bin+=String.fromCharCode(x)});
+  return location.origin+location.pathname+'#r='+btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function shareDialog(){
+  var url=snapshotUrl();
+  var box=h('input',{class:'in',id:'shUrl',type:'text',readonly:'','aria-label':'Enlace de resumen',value:url});
+  var msg=h('p',{class:'empty',role:'status'});
+  var acts=[h('button',{class:'btn ghost',type:'button',text:'Cerrar',onclick:closeModal})];
+  acts.unshift(h('button',{class:'btn',type:'button',text:'Copiar enlace',onclick:function(){
+    function fb(){box.focus();box.select();msg.textContent='Selecciona el enlace y cópialo.'}
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(url).then(function(){msg.textContent='Enlace copiado.'},fb);else fb();
+  }}));
+  if(navigator.share)acts.unshift(h('button',{class:'btn primary',type:'button',text:'Compartir…',onclick:function(){navigator.share({title:'Resumen Barbería JR '+PLACE,url:url}).catch(function(){})}}));
+  openModal(h('div',{class:'modal',role:'dialog','aria-label':'Resumen en el móvil'},[
+    h('h3',{text:'RESUMEN EN EL MÓVIL'}),
+    h('p',{text:'Envíate este enlace (por WhatsApp, por ejemplo) y ábrelo en el móvil para ver lo que lleva cada silla. Es una foto de este momento: para ver cambios, genera otro enlace.'}),
+    box,msg,h('div',{class:'acts'},acts)
+  ]));
+}
+function showSnapshot(){
+  var o=null;
+  try{
+    var s=location.hash.slice(3).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';
+    var bin=atob(s),bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+    o=JSON.parse(new TextDecoder().decode(bytes));
+  }catch(e){o=null}
+  var w=document.querySelector('.wrap'),logo=document.querySelector('.logo').cloneNode(true);
+  w.textContent='';
+  if(!o||!Array.isArray(o.c)){w.appendChild(h('p',{class:'note err',text:'Este enlace no es válido. Pide uno nuevo al jefe.'}));return}
+  document.title='Resumen Barbería JR '+(o.p||'');
+  w.appendChild(h('header',null,[
+    h('div',{class:'brand'},[logo,h('div',null,[h('h1',{text:'BARBERÍA JR'}),h('p',{text:(o.p||'')+' · Resumen'})])]),
+    h('div',{class:'period'},[h('div',{class:'tot'},[h('div',{class:'lbl',text:o.s?'Desde el '+longDate(o.s):'Desde el inicio'}),h('div',{class:'big',text:money(o.v)})])])
+  ]));
+  w.appendChild(h('div',{class:'note',text:'Foto de las '+longDate(o.t)+'. No se actualiza sola: pide un enlace nuevo para ver los cambios.'}));
+  var list=h('section',{class:'hist'});
+  o.c.forEach(function(c,idx){
+    var rows=(c.i||[]).map(function(x){return h('tr',null,[h('td',{text:x[0]+' × '+x[1]}),h('td',{text:money(x[2])})])});
+    if(!rows.length)rows=[h('tr',null,[h('td',{text:'Sin servicios en este periodo'}),h('td',{text:money(0)})])];
+    list.appendChild(h('details',{class:'cl'},[
+      h('summary',null,[h('span',{text:'Silla '+(idx+1)+(c.n?' · '+c.n:'')}),h('span',{class:'lbl',text:c.k+(c.k===1?' servicio':' servicios')}),h('span',{class:'r',text:money(c.v)})]),
+      h('table',null,[h('tbody',null,rows)])]));
+  });
+  w.appendChild(list);
+}
 function freeDialog(chair,name){
   var nm=h('input',{class:'in',id:'fName',type:'text',value:name,placeholder:'Concepto (opcional)'});
   var am=h('input',{class:'in',id:'fAmt',type:'text',inputmode:'decimal',placeholder:'0,00'});
@@ -343,7 +454,9 @@ function freeDialog(chair,name){
   (name?am:nm).focus();
 }
 
-function pricesDialog(){
+function pricesDialog(){db.doc('secret/chairpins').get().then(function(s){pricesDialogInner((s.exists&&s.data().pins)||[])})}
+function pricesDialogInner(hashes){
+  var newPins=[];
   var rows=cfg.services.map(function(s){return {id:s.id,name:s.name,min:s.min,price:s.price}});
   var names=cfg.chairs.slice();
   var box=h('div');
@@ -352,7 +465,8 @@ function pricesDialog(){
     box.appendChild(h('div',{class:'lbl',text:'Barbero de cada silla'}));
     for(var i=0;i<names.length;i++){(function(i){
       box.appendChild(h('div',{class:'row'},[h('span',{text:'Silla '+(i+1),style:'width:64px;flex:none'}),
-        h('input',{class:'in',type:'text',id:'cn'+i,value:names[i]||'',placeholder:'Nombre del barbero','aria-label':'Barbero de la silla '+(i+1),oninput:function(e){names[i]=e.target.value}})]));
+        h('input',{class:'in',type:'text',id:'cn'+i,value:names[i]||'',placeholder:'Nombre del barbero','aria-label':'Barbero de la silla '+(i+1),oninput:function(e){names[i]=e.target.value}}),
+        h('input',{class:'in num',type:'text',inputmode:'numeric',autocomplete:'off',value:newPins[i]||'',placeholder:hashes[i]?'••••':'PIN','aria-label':'PIN de la silla '+(i+1),oninput:function(e){newPins[i]=e.target.value}})]));
     })(i)}
     var addB=h('button',{class:'btn',type:'button',text:'+ Añadir silla ('+names.length+'/'+MAX_CHAIRS+')',onclick:function(){names.push('');draw()}});
     addB.disabled=names.length>=MAX_CHAIRS;
@@ -370,13 +484,18 @@ function pricesDialog(){
       ]));
     });
     box.appendChild(h('div',{class:'row'},[h('button',{class:'btn',type:'button',text:'+ Añadir servicio',onclick:function(){rows.push({id:'s'+Date.now().toString(36),name:'Nuevo servicio',min:30,price:0});draw()}})]));
-    box.appendChild(h('p',{class:'empty',text:'Minutos y precio en euros. Deja el precio vacío para pedirlo al cobrar. Los cobros ya hechos no cambian.'}));
+    box.appendChild(h('p',{class:'empty',text:'PIN de cada silla: déjalo en blanco para no cambiarlo (•••• = ya tiene). Minutos y precio en euros. Deja el precio vacío para pedirlo al cobrar. Los cobros ya hechos no cambian.'}));
   }
   draw();
   var save=h('button',{class:'btn primary',type:'button',text:'Guardar',onclick:function(){
     var clean=rows.filter(function(r){return r.name.trim()}).map(function(r){return {id:r.id,name:r.name.trim(),min:r.min||0,price:r.price}});
-    saveCfg({startedAt:cfg.startedAt,services:clean,chairs:names.map(function(n){return (n||'').trim()})})
-      .then(function(){closeModal();render()}).catch(function(e){showMsg('No se pudo guardar: '+(e&&e.message||'error'),true)});
+    Promise.all(names.map(function(_,i){
+      var v=(newPins[i]||'').trim();
+      if(!v)return Promise.resolve(hashes[i]||'');
+      return v.length<4?Promise.reject({message:'El PIN de la silla '+(i+1)+' necesita al menos 4 caracteres.'}):sha(v);
+    })).then(function(pins){return db.doc('secret/chairpins').set({pins:pins})})
+      .then(function(){return saveCfg({startedAt:cfg.startedAt,services:clean,chairs:names.map(function(n){return (n||'').trim()})})})
+      .then(function(){closeModal();render()}).catch(function(e){toast(e&&e.message||'No se pudo guardar')}).catch(function(e){showMsg('No se pudo guardar: '+(e&&e.message||'error'),true)});
   }});
   openModal(h('div',{class:'modal',role:'dialog','aria-label':'Precios'},[h('h3',{text:'PRECIOS Y BARBEROS'}),box,
     h('div',{class:'acts'},[h('button',{class:'btn ghost',type:'button',text:'Cancelar',onclick:closeModal}),save])]));
@@ -469,6 +588,12 @@ function start(){
   db.collection('closures').orderBy('endedAt','desc').limit(60).onSnapshot(function(snap){
     closures=snap.docs.map(function(d){return Object.assign({_id:d.id},d.data())});render();
   });
+  document.addEventListener('pointerdown',function(){lastAct=Date.now()},true);
+  setInterval(function(){
+    var idle=Date.now()-lastAct;
+    if(isAdmin&&idle>300000){isAdmin=false;unlocked={};closeModal();render()}
+    else if(!isAdmin&&Object.keys(unlocked).length&&idle>120000){unlocked={};closeModal();render()}
+  },10000);
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   try{if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(function(){})}catch(e){}
 }
@@ -538,9 +663,10 @@ $('btnPrices').addEventListener('click',pricesDialog);
 $('btnClose').addEventListener('click',closeDialog);
 $('btnUnlock').addEventListener('click',unlockDialog);
 $('btnBackup').addEventListener('click',backupDialog);
-$('btnLock').addEventListener('click',function(){isAdmin=false;render()});
+$('btnLock').addEventListener('click',function(){isAdmin=false;unlocked={};render()});
+$('btnShare').addEventListener('click',shareDialog);
 $('btnAddChair').addEventListener('click',function(){if(cfg.chairs.length>=MAX_CHAIRS)return;saveCfg({startedAt:cfg.startedAt,services:cfg.services,chairs:cfg.chairs.concat([''])}).catch(function(e){showMsg('No se pudo guardar: '+(e&&e.message||'error'),true)})});
-start();
+if(/^#r=/.test(location.hash)){showSnapshot()}else{start()}
 })();
 </script>
 </body></html>
