@@ -185,7 +185,7 @@ function h(tag,attrs,kids){
 }
 function $(id){return document.getElementById(id)}
 
-var db=null,isAdmin=false,unlocked={},lastAct=Date.now(),openChairs={};
+var db=null,isAdmin=false,unlocked={},lastAct=Date.now(),openChairs={},openHist={};
 var cfg={startedAt:0,services:DEFAULT_SERVICES,chairs:['','','','']};
 var days={};      // docId -> {chair,day,sales[]}
 var closures=[];
@@ -285,20 +285,58 @@ function render(){
   })(c)}
   $('grand').textContent=money(grand);renderPeriod(grand);schedulePush();
   $('adminBtns').hidden=!isAdmin;$('btnUnlock').hidden=isAdmin;$('addRow').hidden=!isAdmin;var ab=$('btnAddChair');ab.textContent='+ Añadir silla ('+cfg.chairs.length+'/'+MAX_CHAIRS+')';ab.disabled=cfg.chairs.length>=MAX_CHAIRS;document.querySelector('.period .tot').hidden=!isAdmin;
-  var hs=$('hist');hs.hidden=!closures.length;
+  var hs=$('hist');hs.hidden=!isAdmin||!closures.length;
   var hl=$('histList');hl.textContent='';
-  closures.forEach(function(cl){
-    var rows=(cl.totals||[]).map(function(t,i){
-      return h('tr',null,[h('td',{text:'Silla '+(i+1)+((cl.chairs&&cl.chairs[i])?' · '+cl.chairs[i]:'')+' ('+((cl.counts&&cl.counts[i])||0)+')'}),h('td',{text:money(t)})]);
-    });
-    hl.appendChild(h('details',{class:'cl'},[
-      h('summary',null,[h('span',{text:cl.label||'Cierre'}),h('span',{class:'lbl',text:(cl.startedAt?longDate(cl.startedAt):'Desde el inicio')+' → '+longDate(cl.endedAt)}),h('span',{class:'r',text:money(cl.total)})]),
-      h('table',null,[h('tbody',null,rows)]),
-      isAdmin?h('div',{class:'row',style:'display:flex;gap:8px;margin-top:10px'},[
+  if(isAdmin)closures.forEach(function(cl){
+    var d=h('details',{class:'cl'},[
+      h('summary',null,[h('span',{text:cl.label||'Cierre'}),h('span',{class:'lbl',text:(cl.startedAt?longDate(cl.startedAt):'Desde el inicio')+' → '+longDate(cl.endedAt)}),h('span',{class:'r',text:money(cl.total)})])
+    ].concat(chairBlocks(cl.totals,cl.chairs,cl.counts,cl.items,'c'+cl._id),[
+      h('div',{style:'display:flex;gap:8px;margin-top:12px'},[
         h('button',{class:'btn',type:'button',text:'Editar',onclick:function(){editClosure(cl)}}),
         h('button',{class:'btn ghost',type:'button',text:'Eliminar',onclick:function(){deleteClosure(cl)}})
-      ]):null
+      ])
     ]));
+    hl.appendChild(keepOpen(d,'c'+cl._id));
+  });
+}
+function keepOpen(d,key){
+  if(openHist[key])d.open=true;
+  d.addEventListener('toggle',function(){openHist[key]=d.open});
+  return d;
+}
+function breakdown(sales){
+  var by={};
+  sales.forEach(function(s){var k='$'+s.name;by[k]=by[k]||[s.name,0,0];by[k][1]++;by[k][2]+=s.price});
+  return Object.keys(by).map(function(k){var x=by[k];return [x[0],x[1],Math.round(x[2]*100)/100]}).sort(function(a,b){return b[2]-a[2]});
+}
+function chairBlocks(totals,names,counts,items,key){
+  function row(a,b){return h('tr',null,[h('td',{text:a}),h('td',{text:b})])}
+  return (totals||[]).map(function(total,i){
+    var list=(items&&items[i])||[];
+    var n=(counts&&counts[i]!=null)?counts[i]:list.reduce(function(a,x){return a+x[1]},0);
+    var rows=list.map(function(x){return row(x[0]+' × '+x[1],money(x[2]))});
+    var sum=list.reduce(function(a,x){return a+x[2]},0);
+    if(list.length&&Math.abs(total-sum)>=0.01)rows.push(row('Ajuste del jefe',money(total-sum)));
+    if(!rows.length)rows=[row(n?'Detalle no disponible':'Sin servicios',money(total))];
+    var d=h('details',{class:'cl'},[
+      h('summary',null,[h('span',{text:'Silla '+(i+1)+((names&&names[i])?' · '+names[i]:'')}),h('span',{class:'lbl',text:n+(n===1?' servicio':' servicios')}),h('span',{class:'r',text:money(total)})]),
+      h('table',null,[h('tbody',null,rows)])]);
+    return keepOpen(d,key+':'+i);
+  });
+}
+/* cierres hechos antes de guardar el detalle: se reconstruye con los cobros guardados */
+function backfillClosures(){
+  Promise.all([db.collection('closures').get(),db.collection('days').get()]).then(function(r){
+    var all=r[1].docs.map(function(d){return d.data()});
+    r[0].docs.forEach(function(doc){
+      var cl=doc.data();if(cl.items&&cl.items.length)return;
+      var items=(cl.totals||[]).map(function(_,i){
+        var list=[];
+        all.forEach(function(d){if(d.chair===i)(d.sales||[]).forEach(function(x){if(x.ts>=(cl.startedAt||0)&&x.ts<cl.endedAt)list.push(x)})});
+        return breakdown(list);
+      });
+      db.doc('closures/'+doc.id).set(Object.assign({},cl,{items:items})).catch(function(){});
+    });
   });
 }
 
@@ -317,7 +355,7 @@ function editClosure(cl){
     var tot=Math.round(vals.reduce(function(a,b){return a+b},0)*100)/100;
     save.disabled=true;
     db.doc('closures/'+cl._id).set({label:label.value.trim()||'Cierre',startedAt:cl.startedAt||0,endedAt:cl.endedAt,totals:vals.map(function(v){return Math.round(v*100)/100}),
-      counts:cl.counts||[0,0,0,0],total:tot,chairs:cl.chairs||cfg.chairs.slice()})
+      counts:cl.counts||[0,0,0,0],items:cl.items||[],total:tot,chairs:cl.chairs||cfg.chairs.slice()})
       .then(closeModal).catch(function(e){save.disabled=false;err.textContent='No se pudo guardar: '+(e&&e.message||'error')});
   }});
   openModal(h('div',{class:'modal',role:'dialog','aria-label':'Editar cierre'},[h('h3',{text:'EDITAR CIERRE'}),
@@ -418,8 +456,10 @@ function summaryObj(){
     chairs.push({n:cfg.chairs[c]||'',k:sales.length,v:r2(t),i:Object.keys(by).map(function(k){return [k,by[k][0],r2(by[k][1])]})});
   })(c)}
   feed.sort(function(a,b){return b[0]-a[0]});
-  var hist=closures.slice(0,8).map(function(cl){return {l:cl.label||'Cierre',s:cl.startedAt||0,e:cl.endedAt,v:cl.total,t:cl.totals||[],c:cl.chairs||[]}});
-  return {p:PLACE,s:cfg.startedAt,v:r2(total),c:chairs,r:feed.slice(0,25),h:hist};
+  var hist=closures.slice(0,8).map(function(cl){return {l:cl.label||'Cierre',s:cl.startedAt||0,e:cl.endedAt,v:cl.total,t:cl.totals||[],c:cl.chairs||[],k:cl.counts||[],i:cl.items||[]}});
+  var out={p:PLACE,s:cfg.startedAt,v:r2(total),c:chairs,r:feed.slice(0,25),h:hist};
+  for(var x=hist.length-1;x>=0&&JSON.stringify(out).length>45000;x--)hist[x].i=[];
+  return out;
 }
 function pushNow(force){
   if(!cloud)return Promise.resolve(false);
@@ -470,8 +510,9 @@ function showLive(token){
     if((o.h||[]).length){
       histBox.appendChild(h('h3',{text:'CIERRES ANTERIORES'}));
       o.h.forEach(function(cl){
-        var rows=(cl.t||[]).map(function(v,i){return h('tr',null,[h('td',{text:'Silla '+(i+1)+((cl.c&&cl.c[i])?' · '+cl.c[i]:'')}),h('td',{text:money(v)})])});
-        histBox.appendChild(h('details',{class:'cl'},[h('summary',null,[h('span',{text:cl.l}),h('span',{class:'lbl',text:(cl.s?longDate(cl.s):'Desde el inicio')+' → '+longDate(cl.e)}),h('span',{class:'r',text:money(cl.v)})]),h('table',null,[h('tbody',null,rows)])]));
+        var key='live'+cl.e;
+        var d=h('details',{class:'cl'},[h('summary',null,[h('span',{text:cl.l}),h('span',{class:'lbl',text:(cl.s?longDate(cl.s):'Desde el inicio')+' → '+longDate(cl.e)}),h('span',{class:'r',text:money(cl.v)})])].concat(chairBlocks(cl.t,cl.c,cl.k,cl.i,key)));
+        histBox.appendChild(keepOpen(d,key));
       });
     }
     tick();
@@ -619,15 +660,15 @@ function pricesDialogInner(hashes){
 }
 
 function closeDialog(){
-  var totals=[],counts=[],t=0;
-  for(var c=0;c<cfg.chairs.length;c++){var s=periodSales(c);var v=s.reduce(function(a,x){return a+x.price},0);totals.push(Math.round(v*100)/100);counts.push(s.length);t+=v}
+  var totals=[],counts=[],items=[],t=0;
+  for(var c=0;c<cfg.chairs.length;c++){var s=periodSales(c);var v=s.reduce(function(a,x){return a+x.price},0);totals.push(Math.round(v*100)/100);counts.push(s.length);items.push(breakdown(s));t+=v}
   t=Math.round(t*100)/100;
   var d=new Date(),label=h('input',{class:'in',id:'clLbl',type:'text',value:'Cierre del '+d.toLocaleDateString('es-ES',{day:'numeric',month:'long'})});
   var trs=totals.map(function(v,i){return h('tr',null,[h('td',{text:'Silla '+(i+1)+(cfg.chairs[i]?' · '+cfg.chairs[i]:'')+' ('+counts[i]+')'}),h('td',{text:money(v)})])});
   trs.push(h('tr',null,[h('td',{text:'TOTAL'}),h('td',{text:money(t)})]));
   var go=h('button',{class:'btn danger',type:'button',text:'Cerrar y empezar de cero',onclick:function(){
     go.disabled=true;var now=Date.now();
-    db.doc('closures/'+now).set({label:label.value.trim()||'Cierre',startedAt:cfg.startedAt,endedAt:now,totals:totals,counts:counts,total:t,chairs:cfg.chairs.slice()})
+    db.doc('closures/'+now).set({label:label.value.trim()||'Cierre',startedAt:cfg.startedAt,endedAt:now,totals:totals,counts:counts,items:items,total:t,chairs:cfg.chairs.slice()})
       .then(function(){return saveCfg({startedAt:now,services:cfg.services,chairs:cfg.chairs})})
       .then(function(){closeModal();subscribeDays();render();toast('Periodo cerrado. Contadores a cero.')})
       .catch(function(e){go.disabled=false;showMsg('No se pudo cerrar: '+(e&&e.message||'error'),true)});
@@ -694,6 +735,7 @@ function start(){
   db=localDb(STORE_KEY);
   render();
   loadCloud().then(function(){schedulePush()});
+  setTimeout(backfillClosures,0);
   setInterval(function(){pushNow(false)},300000);
   window.addEventListener('online',schedulePush);
   var first=true;
@@ -755,7 +797,7 @@ function backupDialog(){
     r.onload=function(){
       try{var o=JSON.parse(r.result);if(!o||typeof o!=='object'||Array.isArray(o))throw new Error('x');}
       catch(e){msg.textContent='Ese archivo no es una copia válida.';return}
-      db.importAll(r.result).then(function(){msg.textContent='Copia restaurada.';loadCloud()},function(e){msg.textContent='No se pudo restaurar: '+e.message});
+      db.importAll(r.result).then(function(){msg.textContent='Copia restaurada.';loadCloud();backfillClosures()},function(e){msg.textContent='No se pudo restaurar: '+e.message});
     };
     r.readAsText(f);
   });
